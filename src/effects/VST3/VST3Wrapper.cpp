@@ -25,6 +25,15 @@ constexpr auto processorStateKey  = wxT("ProcessorState");
 constexpr auto controllerStateKey = wxT("ControllerState");
 constexpr auto parametersKey = wxT("Parameters");
 
+Steinberg::Vst::SpeakerArrangement GetBusArragementForChannels(
+   int32_t channelsCount, Steinberg::Vst::SpeakerArrangement defaultArragment)
+{
+   if (channelsCount == 1)
+      return defaultArragment;
+
+   return Steinberg::Vst::SpeakerArr::kStereo;
+}
+
 struct VST3EffectSettings
 {
    ///Holds the parameter that has been changed since last processing pass.
@@ -87,29 +96,63 @@ const VST3EffectSettings& GetSettings(const EffectSettings& settings)
 
 
 //Activates main audio input/output buses and disables others (event, audio aux)
-void ActivateMainAudioBuses(Steinberg::Vst::IComponent& component)
+bool ActivateMainAudioBuses(Steinberg::Vst::IComponent& component)
 {
    using namespace Steinberg;
-   
+
+   constexpr int32 MaxChannelsPerAudioBus = 2;
+
+   std::vector<Vst::SpeakerArrangement> defaultInputSpeakerArrangements;
+   std::vector<Vst::SpeakerArrangement> defaultOutputSpeakerArrangements;
+
    const auto processor = FUnknownPtr<Vst::IAudioProcessor>(&component);
 
    for(int i = 0, count = component.getBusCount(Vst::kAudio, Vst::kInput); i < count; ++i)
    {
-      Vst::BusInfo busInfo{};
-      if(component.getBusInfo(Vst::kAudio, Vst::kInput, i, busInfo) == kResultOk)
-         component.activateBus(Vst::kAudio, Vst::kInput, i, busInfo.busType == Vst::kMain);
+      Vst::BusInfo busInfo {};
+      Vst::SpeakerArrangement arrangement {0ull};
+      
+      component.getBusInfo(Vst::kAudio, Vst::kInput, i, busInfo);
+
+      Vst::SpeakerArrangement defaultArragement {};
+      processor->getBusArrangement(Vst::kInput, i, defaultArragement);
+
+      arrangement =
+         GetBusArragementForChannels(busInfo.channelCount, defaultArragement);
+      
+      component.activateBus(Vst::kAudio, Vst::kInput, i, busInfo.busType == Vst::kMain);
+
+      defaultInputSpeakerArrangements.push_back(arrangement);
    }
    for(int i = 0, count = component.getBusCount(Vst::kAudio, Vst::kOutput); i < count; ++i)
    {
-      Vst::BusInfo busInfo{};
-      if(component.getBusInfo(Vst::kAudio, Vst::kOutput, i, busInfo) == kResultOk)
-         component.activateBus(Vst::kAudio, Vst::kOutput, i, busInfo.busType == Vst::kMain);
-   }
+      Vst::BusInfo busInfo {};
+      Vst::SpeakerArrangement arrangement {0ull};
+      
+      component.getBusInfo(Vst::kAudio, Vst::kOutput, i, busInfo);
 
+      Vst::SpeakerArrangement defaultArragement {};
+      processor->getBusArrangement(Vst::kOutput, i, defaultArragement);
+
+      arrangement =
+         busInfo.busType == Vst::kMain ?
+            GetBusArragementForChannels(busInfo.channelCount, defaultArragement) :
+            Vst::SpeakerArr::kEmpty;
+
+      component.activateBus(Vst::kAudio, Vst::kOutput, i, busInfo.busType == Vst::kMain);
+      defaultOutputSpeakerArrangements.push_back(arrangement);
+   }
    for(int i = 0, count = component.getBusCount(Vst::kEvent, Vst::kInput); i < count; ++i)
       component.activateBus(Vst::kEvent, Vst::kInput, i, 0);
    for(int i = 0, count = component.getBusCount(Vst::kEvent, Vst::kOutput); i < count; ++i)
       component.activateBus(Vst::kEvent, Vst::kOutput, i, 0);
+
+   auto result = processor->setBusArrangements(
+      defaultInputSpeakerArrangements.empty() ? nullptr : defaultInputSpeakerArrangements.data(), defaultInputSpeakerArrangements.size(),
+      defaultOutputSpeakerArrangements.empty() ? nullptr : defaultOutputSpeakerArrangements.data(), defaultOutputSpeakerArrangements.size()
+   );
+
+   return result == kResultOk;
 }
 
 //The component should be disabled
@@ -123,8 +166,7 @@ bool SetupProcessing(Steinberg::Vst::IComponent& component, Steinberg::Vst::Proc
       //We don't (yet) support custom input/output channel configuration
       //on the host side. No support for event bus. Use default bus and
       //channel configuration
-      ActivateMainAudioBuses(component);
-      return true;
+      return ActivateMainAudioBuses(component);
    }
    return false;
 }
@@ -202,14 +244,25 @@ public:
    {
       assert(mStateChangeSettings != nullptr);
       if(!mParametersCache.empty())
-      {
-         auto& vst3settings = GetSettings(*mStateChangeSettings);
-         for(auto& p : mParametersCache)
-            vst3settings.parameterChanges[p.first] = p.second;
-         mParametersCache.clear();
-         ++vst3settings.changesCounter;
-      }
+         FlushCache(*mStateChangeSettings);
       mStateChangeSettings = nullptr;
+   }
+
+   void FlushCache(EffectSettings& settings)
+   {
+      if(mParametersCache.empty())
+         return;
+
+      auto& vst3settings = GetSettings(settings);
+      for(auto& p : mParametersCache)
+         vst3settings.parameterChanges[p.first] = p.second;
+      mParametersCache.clear();
+      ++vst3settings.changesCounter;
+   }
+
+   void ResetCache()
+   {
+      mParametersCache.clear();
    }
 
    Steinberg::tresult PLUGIN_API beginEdit(Steinberg::Vst::ParamID id) override { return Steinberg::kResultOk; }
@@ -219,26 +272,18 @@ public:
       if(std::this_thread::get_id() != mThreadId)
          return Steinberg::kResultFalse;
 
-      if(mStateChangeSettings != nullptr)
+      if(mStateChangeSettings != nullptr || !mWrapper.IsActive())
          // Collecting edit callbacks from the plug-in, in response to changes
-         // of complete state, while doing FetchSettings()
+         // of complete state, while doing FetchSettings() (which may be delayed...)
          mParametersCache[id] = valueNormalized;
       else if(mAccess)
       {
-         // Handling a UI event from a dialog
          mAccess->ModifySettings([&](EffectSettings& settings)
          {
             auto& vst3settings = GetSettings(settings);
             vst3settings.parameterChanges[id] = valueNormalized;
             ++vst3settings.changesCounter;
-            if(!mWrapper.IsActive())
-            {
-               mWrapper.FlushParameters(settings);
-               mWrapper.StoreSettings(settings);
-            }
          });
-         if(!mWrapper.IsActive())
-            mAccess->Flush();
       }
 
       return Steinberg::kResultOk;
@@ -320,6 +365,9 @@ VST3Wrapper::VST3Wrapper(VST3::Hosting::Module& module, VST3::UID effectUID)
    mEffectComponent = effectComponent;
    mAudioProcessor = audioProcessor;
 
+   if(!SetupProcessing(*mEffectComponent, mSetup))
+      throw std::runtime_error("bus configuration not supported");
+
    auto editController = FUnknownPtr<Vst::IEditController>(mEffectComponent);
    if(editController.get() == nullptr)
    {
@@ -393,6 +441,7 @@ void VST3Wrapper::FetchSettings(EffectSettings& settings)
    //TODO: perform version check
    {
       auto componentHandler = static_cast<ComponentHandler*>(mComponentHandler.get());
+      componentHandler->ResetCache();
       componentHandler->BeginStateChange(settings);
       auto cleanup = finally([&] { componentHandler->EndStateChange(); });
 
@@ -484,28 +533,26 @@ bool VST3Wrapper::Initialize(EffectSettings& settings, Steinberg::Vst::SampleRat
       maxSamplesPerBlock,
       sampleRate
    };
-
-   //Set mActive before FetchSettings and IComponent::setActive
-   //to prevent redundant calls to AccessState::Flush.
-   mActive = true;
-   FetchSettings(settings);//Updates runtime settings...
-
+   
    if(!SetupProcessing(*mEffectComponent.get(), setup))
-   {
-      mActive = false;
       return false;
-   }
+
    mSetup = setup;
+
+   FetchSettings(settings);
 
    if(mEffectComponent->setActive(true) == kResultOk)
    {
-      //Omit the return value check - some plugins return unexpected values (see bug #3581)
-      mAudioProcessor->setProcessing(true);
-      //...make sure they are delivered to the processor
-      ConsumeChanges(settings);
-      return true;
+      if(mAudioProcessor->setProcessing(true) != kResultFalse)
+      {
+         mActive = true;
+         ConsumeChanges(settings);
+         //make zero-flush, to make sure parameters are delivered to the processor...
+         Process(nullptr, nullptr, 0);
+         StoreSettings(settings);
+         return true;
+      }
    }
-   mActive = false;
    return false;
 }
 
@@ -557,14 +604,19 @@ void VST3Wrapper::FlushParameters(EffectSettings& settings)
 {
    if(!mActive)
    {
+      auto componentHandler = static_cast<ComponentHandler*>(mComponentHandler.get());
+      componentHandler->FlushCache(settings);
+
       SetupProcessing(*mEffectComponent, mSetup);
       mActive = true;
       if(mEffectComponent->setActive(true) == Steinberg::kResultOk)
       {
          ConsumeChanges(settings);
-         mAudioProcessor->setProcessing(true);
-         Process(nullptr, nullptr, 0);
-         mAudioProcessor->setProcessing(false);
+         if(mAudioProcessor->setProcessing(true) != Steinberg::kResultFalse)
+         {
+            Process(nullptr, nullptr, 0);
+            mAudioProcessor->setProcessing(false);
+         }
       }
       mEffectComponent->setActive(false);
       mActive = false;
@@ -676,7 +728,8 @@ void VST3Wrapper::BeginParameterEdit(EffectSettingsAccess& access)
 
 void VST3Wrapper::EndParameterEdit()
 {
-   static_cast<ComponentHandler*>(mComponentHandler.get())->SetAccess(nullptr);
+   auto componentHandler = static_cast<ComponentHandler*>(mComponentHandler.get());
+   componentHandler->SetAccess(nullptr);
 }
 
 
