@@ -148,7 +148,7 @@ struct EffectPhaser::Instance
    bool RealtimeInitialize(EffectSettings& settings, double) override;
 
    bool RealtimeAddProcessor(EffectSettings& settings,
-      unsigned numChannels, float sampleRate) override;
+      EffectOutputs *pOutputs, unsigned numChannels, float sampleRate) override;
 
    bool RealtimeFinalize(EffectSettings& settings) noexcept override;
 
@@ -258,7 +258,7 @@ bool EffectPhaser::Instance::RealtimeInitialize(EffectSettings&, double)
 }
 
 bool EffectPhaser::Instance::RealtimeAddProcessor(
-   EffectSettings& settings, unsigned, float sampleRate)
+   EffectSettings& settings, EffectOutputs *, unsigned, float sampleRate)
 {
    EffectPhaser::Instance slave(mProcessor);
 
@@ -286,7 +286,8 @@ size_t EffectPhaser::Instance::RealtimeProcess(size_t group, EffectSettings &set
 
 // Effect implementation
 std::unique_ptr<EffectUIValidator> EffectPhaser::PopulateOrExchange(
-   ShuttleGui& S, EffectInstance&, EffectSettingsAccess& access)
+   ShuttleGui& S, EffectInstance&, EffectSettingsAccess& access,
+   const EffectOutputs *)
 {
    auto& settings = access.Get();
    auto& myEffSettings = GetSettings(settings);
@@ -455,6 +456,7 @@ bool EffectPhaser::Validator::ValidateUI()
          // pass back the modified settings to the MessageBuffer
 
          GetSettings(settings) = mSettings;
+         return nullptr;
       }
    );
 
