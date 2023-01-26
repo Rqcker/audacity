@@ -36,8 +36,6 @@ in which buttons can be placed.
 #include <wx/dcclient.h>
 #include <wx/defs.h>
 #include <wx/gdicmn.h>
-#include <wx/image.h>
-#include <wx/intl.h>
 #include <wx/settings.h>
 #include <wx/sizer.h>
 #include <wx/sysopt.h>
@@ -328,15 +326,13 @@ END_EVENT_TABLE()
 // Constructor
 //
 ToolBar::ToolBar( AudacityProject &project,
-                  int type,
                   const TranslatableString &label,
-                  const wxString &section,
+                  const Identifier &section,
                   bool resizable )
 : wxPanelWrapper()
 , mProject{ project }
 {
    // Save parameters
-   mType = type;
    mLabel = label;
    mSection = section;
    mResizable = resizable;
@@ -349,7 +345,6 @@ ToolBar::ToolBar( AudacityProject &project,
 
    mGrabber = NULL;
    mResizer = NULL;
-   SetId(mType);
 }
 
 //
@@ -367,6 +362,20 @@ bool ToolBar::AcceptsFocusFromKeyboard() const
    return false;
 }
 
+bool ToolBar::ShownByDefault() const
+{
+   return true;
+}
+
+bool ToolBar::HideAfterReset() const
+{
+   return false;
+}
+
+ToolBar::DockID ToolBar::DefaultDockID() const
+{
+   return TopDockID;
+}
 
 //
 // Returns the toolbar title
@@ -388,17 +397,9 @@ TranslatableString ToolBar::GetLabel()
 //
 // Returns the toolbar preferences section
 //
-wxString ToolBar::GetSection()
+Identifier ToolBar::GetSection()
 {
    return mSection;
-}
-
-//
-// Returns the toolbar type
-//
-int ToolBar::GetType()
-{
-   return mType;
 }
 
 //
@@ -447,6 +448,11 @@ void ToolBar::SetVisible( bool bVisible )
    mVisible = bVisible;
 }
 
+std::pair<Identifier, Identifier> ToolBar::PreferredNeighbors() const noexcept
+{
+   return { mPreferredLeftNeighbor, mPreferredTopNeighbor };
+}
+
 //
 // Show or hide the toolbar
 //
@@ -470,7 +476,9 @@ bool ToolBar::Expose( bool show )
       if( !IsPositioned() && show ){
          SetPositioned();
          pParent->CentreOnParent();
-         pParent->Move( pParent->GetPosition() + wxSize( mType*10, mType*10 ));
+         // Cascade the undocked bars
+         pParent->Move( pParent->GetPosition() +
+            wxSize{ mIndex * 10, mIndex * 10 });
       }
       pParent->Show( show );
    }
@@ -488,7 +496,7 @@ void ToolBar::Create( wxWindow *parent )
 
    // Create the window and label it
    wxPanelWrapper::Create( mParent,
-                    mType,
+                    wxID_ANY,
                     wxDefaultPosition,
                     wxDefaultSize,
                     wxNO_BORDER | wxTAB_TRAVERSAL,
@@ -548,7 +556,7 @@ void ToolBar::ReCreateButtons()
       auto ms = std::make_unique<wxBoxSizer>(wxHORIZONTAL);
 
       // Create the grabber and add it to the main sizer
-      mGrabber = safenew Grabber(this, mType);
+      mGrabber = safenew Grabber(this, GetSection());
       ms->Add(mGrabber, 0, wxEXPAND | wxALIGN_LEFT | wxALIGN_TOP | wxRIGHT, 1);
 
       // Use a box sizer for laying out controls
@@ -639,6 +647,12 @@ void ToolBar::UpdatePrefs()
 ToolDock *ToolBar::GetDock()
 {
    return dynamic_cast<ToolDock*>(GetParent());
+}
+
+void ToolBar::SetPreferredNeighbors(Identifier left, Identifier top)
+{
+   mPreferredLeftNeighbor = left;
+   mPreferredTopNeighbor = top;
 }
 
 //
@@ -1019,17 +1033,15 @@ namespace {
 
 RegisteredToolbarFactory::Functions &GetFunctions()
 {
-   static RegisteredToolbarFactory::Functions factories( ToolBarCount );
+   static RegisteredToolbarFactory::Functions factories;
    return factories;
 }
 
 }
 
-RegisteredToolbarFactory::RegisteredToolbarFactory(
-   int id, const Function &function)
+RegisteredToolbarFactory::RegisteredToolbarFactory(const Function &function)
 {
-   wxASSERT( id >= 0 && id < ToolBarCount );
-   GetFunctions()[ id ] = function;
+   GetFunctions().emplace_back(function);
 }
 
 auto RegisteredToolbarFactory::GetFactories() -> const Functions&

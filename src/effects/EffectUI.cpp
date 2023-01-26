@@ -16,6 +16,7 @@
 
 #include "AllThemeResources.h"
 #include "widgets/BasicMenu.h"
+#include "BasicUI.h"
 #include "ConfigInterface.h"
 #include "EffectManager.h"
 #include "PluginManager.h"
@@ -90,7 +91,7 @@ private:
 ///////////////////////////////////////////////////////////////////////////////
 
 #include "../../images/Effect.h"
-#include "../AudioIO.h"
+#include "AudioIO.h"
 #include "../CommonCommandFlags.h"
 #include "../Menus.h"
 #include "../prefs/GUISettings.h" // for RTL_WORKAROUND
@@ -167,6 +168,7 @@ public:
    const EffectSettings &Get() override;
    void Set(EffectSettings &&settings,
       std::unique_ptr<Message> pMessage) override;
+   void Set(std::unique_ptr<Message> pMessage) override;
    void Flush() override;
    bool IsSameAs(const EffectSettingsAccess &other) const override;
 private:
@@ -197,6 +199,15 @@ void EffectSettingsAccessTee::Set(EffectSettings &&settings,
          pMessage ? pMessage->Clone() : nullptr);
    // Move the given settings and message through
    mpMain->Set(std::move(settings), std::move(pMessage));
+}
+
+void EffectSettingsAccessTee::Set(std::unique_ptr<Message> pMessage)
+{
+   // Move copies of the given message into the side
+   if (auto pSide = mwSide.lock())
+      pSide->Set(pMessage ? pMessage->Clone() : nullptr);
+   // Move the given message through
+   mpMain->Set(std::move(pMessage));
 }
 
 void EffectSettingsAccessTee::Flush()
@@ -1112,11 +1123,8 @@ std::shared_ptr<EffectInstance> EffectUIHost::InitializeInstance()
             AudioIO::Get()->AddState(mProject, nullptr, GetID(mEffectUIHost));
       if (mpState) {
          // Find the right instance to connect to the dialog
-         if (!result) {
+         if (!result)
             result = mpState->GetInstance();
-            if (result && !result->Init())
-               result.reset();
-         }
 
          mpAccess2 = mpState->GetAccess();
          if (!(mpAccess2->IsSameAs(*mpAccess)))
@@ -1149,7 +1157,9 @@ std::shared_ptr<EffectInstance> EffectUIHost::InitializeInstance()
    }
    else {
       result = mEffectUIHost.MakeInstance();
-      if (result && !result->Init())
+      if (auto pInstanceEx =
+         std::dynamic_pointer_cast<EffectInstanceEx>(result)
+         ; pInstanceEx && !pInstanceEx->Init())
          result.reset();
    }
 
@@ -1240,8 +1250,16 @@ DialogFactoryResults EffectUI::DialogFactory(wxWindow &parent,
    auto &window = ProjectWindow::Get( project );
 
    const PluginDescriptor *plug = PluginManager::Get().GetPlugin(ID);
-   if (!plug)
+
+   if (!plug || !PluginManager::IsPluginAvailable(*plug))
+   {
+      BasicUI::ShowMessageBox(
+         XO("This plugin could not be loaded.\nIt may have been deleted."),
+         BasicUI::MessageBoxOptions()
+            .Caption(XO("Plugin Error")));
+
       return false;
+   }
 
    EffectType type = plug->GetEffectType();
 

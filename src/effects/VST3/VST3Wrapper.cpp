@@ -38,9 +38,6 @@ struct VST3EffectSettings
 {
    ///Holds the parameter that has been changed since last processing pass.
    std::map<Steinberg::Vst::ParamID, Steinberg::Vst::ParamValue> parameterChanges;
-   ///Incremented whenever changes has been made to parameters, helps to avoid
-   ///redundant store operations when processing is active
-   int changesCounter { 0 };
 
    ///Holds the last known processor/component state, rarely updates (usually only on UI or preset change)
    std::optional<wxString> processorState;
@@ -118,10 +115,11 @@ bool ActivateMainAudioBuses(Steinberg::Vst::IComponent& component)
       processor->getBusArrangement(Vst::kInput, i, defaultArragement);
 
       arrangement =
-         GetBusArragementForChannels(busInfo.channelCount, defaultArragement);
+         busInfo.busType == Vst::kMain
+            ? GetBusArragementForChannels(busInfo.channelCount, defaultArragement)
+            : Vst::SpeakerArr::kEmpty;
       
       component.activateBus(Vst::kAudio, Vst::kInput, i, busInfo.busType == Vst::kMain);
-
       defaultInputSpeakerArrangements.push_back(arrangement);
    }
    for(int i = 0, count = component.getBusCount(Vst::kAudio, Vst::kOutput); i < count; ++i)
@@ -135,9 +133,9 @@ bool ActivateMainAudioBuses(Steinberg::Vst::IComponent& component)
       processor->getBusArrangement(Vst::kOutput, i, defaultArragement);
 
       arrangement =
-         busInfo.busType == Vst::kMain ?
-            GetBusArragementForChannels(busInfo.channelCount, defaultArragement) :
-            Vst::SpeakerArr::kEmpty;
+         busInfo.busType == Vst::kMain
+            ? GetBusArragementForChannels(busInfo.channelCount, defaultArragement)
+            : Vst::SpeakerArr::kEmpty;
 
       component.activateBus(Vst::kAudio, Vst::kOutput, i, busInfo.busType == Vst::kMain);
       defaultOutputSpeakerArrangements.push_back(arrangement);
@@ -222,6 +220,8 @@ class ComponentHandler : public Steinberg::Vst::IComponentHandler
    
    EffectSettings* mStateChangeSettings {nullptr};
    std::map<Steinberg::Vst::ParamID, Steinberg::Vst::ParamValue> mParametersCache;
+   std::map<Steinberg::Vst::ParamID, Steinberg::Vst::ParamValue> mCurrentParamValues;
+
 public:
    
    ComponentHandler(VST3Wrapper& wrapper)
@@ -230,6 +230,27 @@ public:
       FUNKNOWN_CTOR;
    }
    virtual ~ComponentHandler() { FUNKNOWN_DTOR; }
+
+   void LoadCurrentParamValues()
+   {
+      const auto paramsCount = mWrapper.mEditController->getParameterCount();
+
+      for (int i = 0; i < paramsCount; ++i)
+      {
+         using Steinberg::Vst::ParameterInfo;
+         ParameterInfo info {};
+         mWrapper.mEditController->getParameterInfo(i, info);
+
+         if (info.flags & (ParameterInfo::kIsHidden | ParameterInfo::kIsProgramChange))
+            continue;
+
+         if ((info.flags & ParameterInfo::kCanAutomate)  == 0)
+            continue;
+
+         mCurrentParamValues[info.id] =
+            mWrapper.mEditController->getParamNormalized(info.id);
+      }
+   }
 
    void SetAccess(EffectSettingsAccess* access) { mAccess = access; }
 
@@ -243,8 +264,7 @@ public:
    void EndStateChange()
    {
       assert(mStateChangeSettings != nullptr);
-      if(!mParametersCache.empty())
-         FlushCache(*mStateChangeSettings);
+      FlushCache(*mStateChangeSettings);
       mStateChangeSettings = nullptr;
    }
 
@@ -252,17 +272,39 @@ public:
    {
       if(mParametersCache.empty())
          return;
-
+      
       auto& vst3settings = GetSettings(settings);
       for(auto& p : mParametersCache)
          vst3settings.parameterChanges[p.first] = p.second;
       mParametersCache.clear();
-      ++vst3settings.changesCounter;
    }
 
    void ResetCache()
    {
       mParametersCache.clear();
+   }
+
+   void NotifyParamChange(
+      Steinberg::Vst::ParamID id, Steinberg::Vst::ParamValue valueNormalized)
+   {
+      auto it = mCurrentParamValues.find(id);
+
+      if (it == mCurrentParamValues.end())
+         return;
+
+      // Tolerance to avoid unnecessary updates
+      // Waves plugins constantly update several parameters
+      // with very small changes in the values without any
+      // user input
+      constexpr auto epsilon = Steinberg::Vst::ParamValue(1e-5);
+
+      if (std::abs(it->second - valueNormalized) < epsilon)
+         return;
+
+      it->second = valueNormalized;
+
+      if (mStateChangeSettings == nullptr && mWrapper.ParamChangedHandler)
+         mWrapper.ParamChangedHandler(id, valueNormalized);
    }
 
    Steinberg::tresult PLUGIN_API beginEdit(Steinberg::Vst::ParamID id) override { return Steinberg::kResultOk; }
@@ -271,6 +313,8 @@ public:
    {
       if(std::this_thread::get_id() != mThreadId)
          return Steinberg::kResultFalse;
+
+      NotifyParamChange(id, valueNormalized);
 
       if(mStateChangeSettings != nullptr || !mWrapper.IsActive())
          // Collecting edit callbacks from the plug-in, in response to changes
@@ -282,7 +326,6 @@ public:
          {
             auto& vst3settings = GetSettings(settings);
             vst3settings.parameterChanges[id] = valueNormalized;
-            ++vst3settings.changesCounter;
             return nullptr;
          });
       }
@@ -412,6 +455,10 @@ VST3Wrapper::VST3Wrapper(VST3::Hosting::Module& module, VST3::UID effectUID)
 
    mDefaultSettings = MakeSettings();
    StoreSettings(mDefaultSettings);
+
+   
+   static_cast<ComponentHandler*>(mComponentHandler.get())
+      ->LoadCurrentParamValues();
 }
 
 VST3Wrapper::~VST3Wrapper()
@@ -601,12 +648,20 @@ void VST3Wrapper::ConsumeChanges(const EffectSettings& settings)
 //
 //As a side effect subsequent call to IAudioProcessor::process may flush
 //plugin internal buffers
-void VST3Wrapper::FlushParameters(EffectSettings& settings)
+void VST3Wrapper::FlushParameters(EffectSettings& settings, bool* hasChanges)
 {
    if(!mActive)
    {
       auto componentHandler = static_cast<ComponentHandler*>(mComponentHandler.get());
       componentHandler->FlushCache(settings);
+
+      const auto doProcessing = !GetSettings(settings).parameterChanges.empty();
+
+      if(hasChanges != nullptr)
+         *hasChanges = doProcessing;
+
+      if(!doProcessing)
+         return;
 
       SetupProcessing(*mEffectComponent, mSetup);
       mActive = true;
@@ -622,6 +677,8 @@ void VST3Wrapper::FlushParameters(EffectSettings& settings)
       mEffectComponent->setActive(false);
       mActive = false;
    }
+   else if(hasChanges != nullptr)
+      *hasChanges = false;
 }
 
 size_t VST3Wrapper::Process(const float* const* inBlock, float* const* outBlock, size_t blockLen)
@@ -814,7 +871,6 @@ void VST3Wrapper::CopySettingsContents(const EffectSettings& src, EffectSettings
    auto& from = GetSettings(*const_cast<EffectSettings*>(&src));
    auto& to = GetSettings(dst);
 
-   to.changesCounter = from.changesCounter;
    //Don't allocate in worker
    std::swap(from.parameterChanges, to.parameterChanges);
 }

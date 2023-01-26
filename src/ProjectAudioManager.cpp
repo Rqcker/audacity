@@ -19,6 +19,7 @@ Paul Licameli split from ProjectManager.cpp
 #include "AudioIO.h"
 #include "BasicUI.h"
 #include "CommonCommandFlags.h"
+#include "DefaultPlaybackPolicy.h"
 #include "Menus.h"
 #include "Meter.h"
 #include "Mix.h"
@@ -36,14 +37,11 @@ Paul Licameli split from ProjectManager.cpp
 #include "ViewInfo.h"
 #include "WaveTrack.h"
 #include "toolbars/ToolManager.h"
-#include "prefs/TracksPrefs.h"
 #include "tracks/ui/Scrubbing.h"
 #include "tracks/ui/TrackView.h"
 #include "widgets/MeterPanelBase.h"
 #include "widgets/AudacityMessageBox.h"
 
-
-wxDEFINE_EVENT(EVT_RECORDING_DROPOUT, RecordingDropoutEvent);
 
 static AudacityProject::AttachedObjects::RegisteredFactory
 sProjectAudioManagerKey {
@@ -69,8 +67,8 @@ ProjectAudioManager::ProjectAudioManager( AudacityProject &project )
 {
    static ProjectStatus::RegisteredStatusWidthFunction
       registerStatusWidthFunction{ StatusWidthFunction };
-   project.Bind( EVT_CHECKPOINT_FAILURE,
-      &ProjectAudioManager::OnCheckpointFailure, this );
+   mCheckpointFailureSubcription = ProjectFileIO::Get(project)
+      .Subscribe(*this, &ProjectAudioManager::OnCheckpointFailure);
 }
 
 ProjectAudioManager::~ProjectAudioManager() = default;
@@ -554,13 +552,14 @@ void ProjectAudioManager::Stop(bool stopStream /* = true*/)
       }
    }
 
-   const auto toolbar = ToolManager::Get( *project ).GetToolBar(ScrubbingBarID);
+   // To do: eliminate this, use an event instead
+   const auto toolbar = ToolManager::Get( *project ).GetToolBar(wxT("Scrub"));
    if (toolbar)
       toolbar->EnableDisableButtons();
 }
 
 
-WaveTrackArray ProjectAudioManager::ChooseExistingRecordingTracks(
+WritableSampleTrackArray ProjectAudioManager::ChooseExistingRecordingTracks(
    AudacityProject &proj, bool selectedOnly, double targetRate)
 {
    auto p = &proj;
@@ -589,7 +588,7 @@ WaveTrackArray ProjectAudioManager::ChooseExistingRecordingTracks(
 
    auto &trackList = TrackList::Get( *p );
    std::vector<unsigned> channelCounts;
-   WaveTrackArray candidates;
+   WritableSampleTrackArray candidates;
    const auto range = trackList.Leaders<WaveTrack>();
    for ( auto candidate : selectedOnly ? range + &Track::IsSelected : range ) {
       if (targetRate != RATE_NOT_SELECTED && candidate->GetRate() != targetRate)
@@ -654,7 +653,7 @@ void ProjectAudioManager::OnRecord(bool altAppearance)
          t1 = DBL_MAX;
 
       auto options = DefaultPlayOptions(*p);
-      WaveTrackArray existingTracks;
+      WritableSampleTrackArray existingTracks;
 
       // Checking the selected tracks: counting them and
       // making sure they all have the same rate
@@ -1063,22 +1062,23 @@ void ProjectAudioManager::OnAudioIOStopRecording()
          // We want this to have No-fail-guarantee if we get here from exception
          // handling of recording, and that means we rely on the last autosave
          // successfully committed to the database, not risking a failure
-         history.PushState(XO("Recorded Audio"), XO("Record"),
-            UndoPush::NOAUTOSAVE);
+         auto flags = AudioIO::Get()->HasRecordingException()
+            ? UndoPush::NOAUTOSAVE
+            : UndoPush::NONE;
+         history.PushState(XO("Recorded Audio"), XO("Record"), flags);
 
          // Now, we may add a label track to give information about
          // dropouts.  We allow failure of this.
          auto gAudioIO = AudioIO::Get();
          auto &intervals = gAudioIO->LostCaptureIntervals();
-         if (intervals.size()) {
-            RecordingDropoutEvent evt{ intervals };
-            mProject.ProcessEvent(evt);
-         }
+         if (intervals.size())
+            Publish( RecordingDropoutEvent{ intervals } );
       }
    }
 }
 
-void ProjectAudioManager::OnAudioIONewBlocks(const WaveTrackArray *tracks)
+void ProjectAudioManager::OnAudioIONewBlocks(
+   const WritableSampleTrackArray *tracks)
 {
    auto &project = mProject;
    auto &projectFileIO = ProjectFileIO::Get( project );
@@ -1111,10 +1111,10 @@ void ProjectAudioManager::OnSoundActivationThreshold()
    }
 }
 
-void ProjectAudioManager::OnCheckpointFailure(wxCommandEvent &evt)
+void ProjectAudioManager::OnCheckpointFailure(ProjectFileIOMessage message)
 {
-   evt.Skip();
-   Stop();
+   if (message == ProjectFileIOMessage::CheckpointFailure)
+      Stop();
 }
 
 bool ProjectAudioManager::Playing() const
@@ -1176,7 +1176,7 @@ DefaultPlayOptions( AudacityProject &project, bool newDefault )
          const AudioIOStartStreamOptions &options)
             -> std::unique_ptr<PlaybackPolicy>
       {
-         return std::make_unique<NewDefaultPlaybackPolicy>( project,
+         return std::make_unique<DefaultPlaybackPolicy>( project,
             trackEndTime, loopEndTime,
             options.loopEnabled, options.variableSpeed);
       };
@@ -1303,8 +1303,6 @@ void ProjectAudioManager::DoPlayStopSelect()
       PlayCurrentRegion(false);
    }
 }
-
-#include "CommonCommandFlags.h"
 
 static RegisteredMenuItemEnabler stopIfPaused{{
    []{ return PausedFlag(); },

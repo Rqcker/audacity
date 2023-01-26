@@ -87,10 +87,8 @@ CommandManager.  It holds the callback for one command.
 #include <wx/evtloop.h>
 #include <wx/frame.h>
 #include <wx/hash.h>
-#include <wx/intl.h>
 #include <wx/log.h>
 #include <wx/menu.h>
-#include <wx/tokenzr.h>
 
 #include "../ActiveProject.h"
 #include "../Journal.h"
@@ -1264,8 +1262,13 @@ bool CommandManager::HandleCommandEntry(AudacityProject &project,
    CommandContext context{ project, evt, entry->index, entry->parameter };
    if (pGivenContext)
       context.temporarySelection = pGivenContext->temporarySelection;
-   auto &handler = entry->finder(project);
-   (handler.*(entry->callback))(context);
+   // Discriminate the union entry->callback by entry->finder
+   if (auto &finder = entry->finder) {
+      auto &handler = finder(project);
+      (handler.*(entry->callback.memberFn))(context);
+   }
+   else
+      (entry->callback.nonMemberFn)(context);
    mLastProcessId = 0;
    return true;
 }
@@ -1300,8 +1303,13 @@ void CommandManager::RegisterLastTool(const CommandContext& context) {
 void CommandManager::DoRepeatProcess(const CommandContext& context, int id) {
    mLastProcessId = 0;  //Don't Process this as repeat
    CommandListEntry* entry = mCommandNumericIDHash[id];
-   auto& handler = entry->finder(context.project);
-   (handler.*(entry->callback))(context);
+   // Discriminate the union entry->callback by entry->finder
+   if (auto &finder = entry->finder) {
+      auto &handler = finder(context.project);
+      (handler.*(entry->callback.memberFn))(context);
+   }
+   else
+      (entry->callback.nonMemberFn)(context);
 }
 
 

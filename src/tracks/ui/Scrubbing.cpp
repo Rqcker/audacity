@@ -13,10 +13,10 @@ Paul Licameli split from TrackPanel.cpp
 
 #include <functional>
 
-#include "../../AudioIO.h"
+#include "AudioIO.h"
 #include "../../CommonCommandFlags.h"
 #include "Project.h"
-#include "../../ProjectAudioIO.h"
+#include "ProjectAudioIO.h"
 #include "../../ProjectAudioManager.h"
 #include "ProjectHistory.h"
 #include "../../ProjectWindows.h"
@@ -970,8 +970,8 @@ void Scrubber::OnToggleScrubRuler(const CommandContext&)
    mShowScrubbing = !mShowScrubbing;
    WriteScrubEnabledPref(mShowScrubbing);
    gPrefs->Flush();
-   const auto toolbar =
-      ToolManager::Get( *mProject ).GetToolBar( ScrubbingBarID );
+   // To do: move this, or eliminate it, use an event instead
+   const auto toolbar = ToolManager::Get(*mProject).GetToolBar(wxT("Scrub"));
    toolbar->EnableDisableButtons();
    CheckMenuItems();
 }

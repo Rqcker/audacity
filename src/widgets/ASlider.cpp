@@ -39,17 +39,12 @@ or ASlider.
 #include <wx/dcbuffer.h>
 #include <wx/frame.h>
 #include <wx/graphics.h>
-#include <wx/image.h>
 #include <wx/panel.h>
 #include <wx/tooltip.h>
 #include <wx/debug.h>
 #include <wx/textctrl.h>
 #include <wx/valtext.h>
-#include <wx/dialog.h>
-#include <wx/sizer.h>
-#include <wx/button.h>
 #include <wx/statline.h>
-#include <wx/sizer.h>
 #include <wx/settings.h>
 #include <wx/popupwin.h>
 #include <wx/window.h>
@@ -611,7 +606,6 @@ void LWSlider::Init(wxWindow * parent,
    mThumbBitmapHilited = nullptr;
    mScrollLine = 1.0f;
    mScrollPage = 5.0f;
-   mTipPanel = NULL;
 
    AdjustSize(size);
 
@@ -1409,9 +1403,11 @@ void LWSlider::OnKeyDown(wxKeyEvent & event)
 void LWSlider::SetParent(wxWindow* parent)
 {
    mParent = parent;
+   //VS: create pop win if there is no one, don't re-parent
+   //as it seem to be a workaround for DC drawing purposes
+   //(see `WaveTrackControls::GainSlider`)
    CreatePopWin();
 }
-
 
 void LWSlider::SendUpdate( float newValue )
 {

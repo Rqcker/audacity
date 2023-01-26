@@ -7,7 +7,6 @@
 **********************************************************************/
 #include "EffectInterface.h"
 #include <wx/tokenzr.h>
-#include <wx/window.h>
 
 const RegistryPath &EffectSettingsExtra::DurationKey()
 {
@@ -32,6 +31,10 @@ void SimpleEffectSettingsAccess::Set(EffectSettings &&settings,
    std::unique_ptr<Message>)
 {
    mSettings = std::move(settings);
+}
+
+void SimpleEffectSettingsAccess::Set(std::unique_ptr<Message>)
+{
 }
 
 void SimpleEffectSettingsAccess::Flush()
@@ -128,11 +131,6 @@ bool EffectSettingsManager::CopySettingsContents(
 
 EffectInstance::~EffectInstance() = default;
 
-bool EffectInstance::Init()
-{
-   return true;
-}
-
 bool EffectInstance::RealtimeInitialize(EffectSettings &, double)
 {
    return false;
@@ -157,6 +155,11 @@ bool EffectInstance::RealtimeResume()
 auto EffectInstance::MakeMessage() const -> std::unique_ptr<Message>
 {
    return nullptr;
+}
+
+bool EffectInstance::UsesMessages() const noexcept
+{
+   return false;
 }
 
 bool EffectInstance::RealtimeProcessStart(MessagePackage &)
@@ -191,7 +194,10 @@ auto EffectInstance::GetLatency(const EffectSettings &, double) const
    return 0;
 }
 
-EffectInstanceEx::~EffectInstanceEx() = default;
+bool EffectInstance::NeedsDither() const
+{
+   return true;
+}
 
 EffectInstanceWithBlockSize::~EffectInstanceWithBlockSize() = default;
 
@@ -206,39 +212,6 @@ size_t EffectInstanceWithBlockSize::SetBlockSize(size_t maxBlockSize)
 }
 
 EffectInstanceFactory::~EffectInstanceFactory() = default;
-
-EffectUIValidator::EffectUIValidator(
-   EffectUIClientInterface &effect, EffectSettingsAccess &access)
-   : mEffect{effect}
-   , mAccess{access}
-{}
-
-EffectUIValidator::~EffectUIValidator() = default;
-
-bool EffectUIValidator::UpdateUI()
-{
-   return true;
-}
-
-bool EffectUIValidator::IsGraphicalUI()
-{
-   return false;
-}
-
-void EffectUIValidator::Disconnect()
-{
-}
-
-void EffectUIValidator::OnClose()
-{
-   if (!mUIClosed)
-   {
-      mEffect.CloseUI();
-      mUIClosed = true;
-   }
-}
-
-EffectUIClientInterface::~EffectUIClientInterface() = default;
 
 const RegistryPath &CurrentSettingsGroup()
 {

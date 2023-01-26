@@ -25,7 +25,6 @@
 
 #include <math.h>
 
-#include <wx/intl.h>
 #include <wx/slider.h>
 
 #include "../ShuttleGui.h"
@@ -80,6 +79,7 @@ struct EffectPhaser::Validator
 
    void PopulateOrExchange(ShuttleGui& S);
 
+   wxWeakRef<wxWindow> mUIParent;
    EffectPhaserSettings mSettings;
 
    wxTextCtrl* mStagesT;
@@ -117,14 +117,12 @@ struct EffectPhaser::Validator
    
    void EnableApplyFromValidate()
    {
-      Effect& actualEffect = static_cast<Effect&>(mEffect);
-      actualEffect.EnableApply(actualEffect.GetUIParent()->Validate());
+      EnableApply(mUIParent, mUIParent->Validate());
    }
 
    bool EnableApplyFromTransferDataFromWindow()
    {
-      Effect& actualEffect = static_cast<Effect&>(mEffect);
-      return actualEffect.EnableApply(actualEffect.GetUIParent()->TransferDataFromWindow());
+      return EnableApply(mUIParent, mUIParent->TransferDataFromWindow());
    }
    
 };
@@ -220,9 +218,7 @@ EffectType EffectPhaser::GetType() const
 
 auto EffectPhaser::RealtimeSupport() const -> RealtimeSince
 {
-   // TODO reenable after achieving statelessness
-   return RealtimeSince::Never;
-//   return RealtimeSince::Always;
+   return RealtimeSince::After_3_1;
 }
 
 unsigned EffectPhaser::Instance::GetAudioInCount() const
@@ -299,6 +295,7 @@ std::unique_ptr<EffectUIValidator> EffectPhaser::PopulateOrExchange(
 
 void EffectPhaser::Validator::PopulateOrExchange(ShuttleGui& S)
 {
+   mUIParent = S.GetParent();
    auto& ms = mSettings;
 
    S.SetBorder(5);
@@ -415,7 +412,7 @@ bool EffectPhaser::Validator::UpdateUI()
 
    Effect& actualEffect = static_cast<Effect&>(mEffect);
 
-   if (!actualEffect.GetUIParent()->TransferDataToWindow())
+   if (!mUIParent->TransferDataToWindow())
    {
       return false;
    }
@@ -436,7 +433,7 @@ bool EffectPhaser::Validator::ValidateUI()
 {
    // This bit was copied from the original override of TransferDataFromWindow
    Effect& actualEffect = static_cast<Effect&>(mEffect);
-   if (!actualEffect.GetUIParent()->Validate() || !actualEffect.GetUIParent()->TransferDataFromWindow())
+   if (!mUIParent->Validate() || !mUIParent->TransferDataFromWindow())
    {
       return false;
    }
@@ -550,6 +547,7 @@ void EffectPhaser::Validator::OnStagesSlider(wxCommandEvent & evt)
    EnableApplyFromValidate();
 
    ValidateUI();
+   Publish(EffectSettingChanged{});
 }
 
 void EffectPhaser::Validator::OnDryWetSlider(wxCommandEvent & evt)
@@ -561,6 +559,7 @@ void EffectPhaser::Validator::OnDryWetSlider(wxCommandEvent & evt)
    EnableApplyFromValidate();
 
    ValidateUI();
+   Publish(EffectSettingChanged{});
 }
 
 void EffectPhaser::Validator::OnFreqSlider(wxCommandEvent & evt)
@@ -573,6 +572,7 @@ void EffectPhaser::Validator::OnFreqSlider(wxCommandEvent & evt)
    EnableApplyFromValidate();
 
    ValidateUI();
+   Publish(EffectSettingChanged{});
 }
 
 void EffectPhaser::Validator::OnPhaseSlider(wxCommandEvent & evt)
@@ -587,6 +587,7 @@ void EffectPhaser::Validator::OnPhaseSlider(wxCommandEvent & evt)
    EnableApplyFromValidate();
 
    ValidateUI();
+   Publish(EffectSettingChanged{});
 }
 
 void EffectPhaser::Validator::OnDepthSlider(wxCommandEvent & evt)
@@ -598,6 +599,7 @@ void EffectPhaser::Validator::OnDepthSlider(wxCommandEvent & evt)
    EnableApplyFromValidate();
 
    ValidateUI();
+   Publish(EffectSettingChanged{});
 }
 
 void EffectPhaser::Validator::OnFeedbackSlider(wxCommandEvent & evt)
@@ -613,6 +615,7 @@ void EffectPhaser::Validator::OnFeedbackSlider(wxCommandEvent & evt)
    EnableApplyFromValidate();
 
    ValidateUI();
+   Publish(EffectSettingChanged{});
 }
 
 void EffectPhaser::Validator::OnGainSlider(wxCommandEvent & evt)
@@ -624,6 +627,7 @@ void EffectPhaser::Validator::OnGainSlider(wxCommandEvent & evt)
    EnableApplyFromValidate();
 
    ValidateUI();
+   Publish(EffectSettingChanged{});
 }
 
 void EffectPhaser::Validator::OnStagesText(wxCommandEvent & WXUNUSED(evt))
@@ -638,6 +642,7 @@ void EffectPhaser::Validator::OnStagesText(wxCommandEvent & WXUNUSED(evt))
    mStagesS->SetValue((int) (ms.mStages * Stages.scale));
 
    ValidateUI();
+   Publish(EffectSettingChanged{});
 }
 
 void EffectPhaser::Validator::OnDryWetText(wxCommandEvent & WXUNUSED(evt))
@@ -652,6 +657,7 @@ void EffectPhaser::Validator::OnDryWetText(wxCommandEvent & WXUNUSED(evt))
    mDryWetS->SetValue((int) (ms.mDryWet * DryWet.scale));
 
    ValidateUI();
+   Publish(EffectSettingChanged{});
 }
 
 void EffectPhaser::Validator::OnFreqText(wxCommandEvent & WXUNUSED(evt))
@@ -666,6 +672,7 @@ void EffectPhaser::Validator::OnFreqText(wxCommandEvent & WXUNUSED(evt))
    mFreqS->SetValue((int) (ms.mFreq * Freq.scale));
 
    ValidateUI();
+   Publish(EffectSettingChanged{});
 }
 
 void EffectPhaser::Validator::OnPhaseText(wxCommandEvent & WXUNUSED(evt))
@@ -680,6 +687,7 @@ void EffectPhaser::Validator::OnPhaseText(wxCommandEvent & WXUNUSED(evt))
    mPhaseS->SetValue((int) (ms.mPhase * Phase.scale));
 
    ValidateUI();
+   Publish(EffectSettingChanged{});
 }
 
 void EffectPhaser::Validator::OnDepthText(wxCommandEvent & WXUNUSED(evt))
@@ -694,6 +702,7 @@ void EffectPhaser::Validator::OnDepthText(wxCommandEvent & WXUNUSED(evt))
    mDepthS->SetValue((int) (ms.mDepth * Depth.scale));
 
    ValidateUI();
+   Publish(EffectSettingChanged{});
 }
 
 void EffectPhaser::Validator::OnFeedbackText(wxCommandEvent & WXUNUSED(evt))
@@ -708,6 +717,7 @@ void EffectPhaser::Validator::OnFeedbackText(wxCommandEvent & WXUNUSED(evt))
    mFeedbackS->SetValue((int) (ms.mFeedback * Feedback.scale));
 
    ValidateUI();
+   Publish(EffectSettingChanged{});
 }
 
 void EffectPhaser::Validator::OnGainText(wxCommandEvent & WXUNUSED(evt))
@@ -722,4 +732,5 @@ void EffectPhaser::Validator::OnGainText(wxCommandEvent & WXUNUSED(evt))
    mOutGainS->SetValue((int) (ms.mOutGain * OutGain.scale));
 
    ValidateUI();
+   Publish(EffectSettingChanged{});
 }
